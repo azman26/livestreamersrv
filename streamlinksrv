@@ -46,7 +46,11 @@ from streamlink.stream.ffmpegmux import MuxedStream
 from streamlink import (StreamlinkError, PluginError, NoStreamsError, NoPluginError, StreamError)
 from streamlink.exceptions import FatalPluginError
 from streamlink import __version__ as streamlink_version
-from streamlink import __version_date__ as streamlink_version_date
+try:
+	from streamlink import __version_date__ as streamlink_version_date
+except ImportError:
+	streamlink_version_date = "N/A"
+
 import streamlink.logger as logger
 try:
 	from streamlink import opts_parser
@@ -54,6 +58,7 @@ try:
 	from streamlink.opts_parser import __version__ as opts_parser_version
 except ImportError:
 	opts_parser_version = "N/A"
+	PLUGINS_DIR = ""
 
 try:
 	from youtube_dl.version import __version__ as ytdl_version
@@ -375,7 +380,7 @@ def start():
 			LOGGER.error("err: {}", str(err))
 
 	httpd = ThreadedHTTPServer(("", PORT_NUMBER), StreamHandler)
-	LOGGER.info("{0} Server ({1}) started", time.asctime(), __version__)
+	LOGGER.info("{0} Server ({1}) started".format(time.asctime(), __version__))
 	LOGGER.debug("Host:            {0}", hostname())
 	LOGGER.debug("Port:            {0}", PORT_NUMBER)
 	LOGGER.debug("OS:              {0}", platform.platform())
@@ -393,7 +398,7 @@ def start():
 	except KeyboardInterrupt:
 		pass
 	httpd.server_close()
-	LOGGER.info("{0} Server stopped - Host: {1}, Port: {2}", time.asctime(), hostname(), PORT_NUMBER)
+	LOGGER.info("{0} Server stopped - Host: {1}, Port: {2}".format(time.asctime(), hostname(), PORT_NUMBER))
 
 
 class Daemon:
