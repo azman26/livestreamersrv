@@ -1,4 +1,5 @@
-livestreamersrv
+
+streamlinksrv
 ===============
 
-livestreamersrv is a helper deamon for livestreamer
+streamlinksrv is a fork of livestreamersrv from Billy2011
