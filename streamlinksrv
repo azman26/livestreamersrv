@@ -3,10 +3,12 @@
 # Linux Python2/3 Streamlink Daemon
 #
 # Copyright (c) 2017 - 2021 Billy2011 @vuplus-support.org
-# Copyright (c) 2021 jbleyel
+# Copyright (c) 2021 jbleyel (python3 mod)
+# License: GPLv2+
 #
 
-__version__ = "1.7.1"
+__version__ = "1.8.2"
+__optparserversion__ = "0.2.8"
 
 import argparse
 import atexit
@@ -15,8 +17,8 @@ import logging
 import os
 import platform
 import re
-import signal
 import shutil
+import signal
 import socket
 import sys
 import time
@@ -24,8 +26,10 @@ import traceback
 import warnings
 
 from platform import node as hostname
+from requests import __version__ as requests_version
 from six import itervalues, iteritems
 from six.moves.urllib_parse import unquote
+from websocket import __version__ as websocket_version
 
 from shlex import split as argsplit
 from string import printable
@@ -36,30 +40,29 @@ from collections import OrderedDict
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn as ForkingMixIn
 
-from websocket import __version__ as websocket_version
-from requests import __version__ as requests_version
 
 try:
-	from socks import __version__ as socks_version
+    from socks import __version__ as socks_version
 except ImportError:
-	socks_version = "N/A"
+    socks_version = "N/A"
 
+import streamlink.logger as logger
+from streamlink import PluginError, NoStreamsError, NoPluginError, StreamError
 from streamlink import Streamlink
 from streamlink import plugins
-#from streamlink.stream.ffmpegmux import MuxedStream
-from streamlink import PluginError, NoStreamsError, NoPluginError, StreamError
 from streamlink.exceptions import FatalPluginError
 from streamlink import __version__ as streamlink_version
 from streamlink.plugin import PluginOptions
 from streamlink.utils.args import comma_list, comma_list_filter, filesize, keyvalue, num
 from streamlink.utils.times import hours_minutes_seconds
+from streamlink.stream import HTTPStream
+from streamlink.stream.ffmpegmux import MuxedStream
 
-import streamlink.logger as logger
 
 try:
-	from youtube_dl.version import __version__ as ytdl_version
+    from youtube_dl.version import __version__ as ytdl_version
 except ImportError:
-	ytdl_version = "N/A"
+    ytdl_version = "N/A"
 
 PORT_NUMBER = 8088  # change it to 88 for livestreamersrv compatibility
 _loglevel = LOGLEVEL = "info"  # "critical", "error", "warning", "info", "debug", "trace" or "none"
@@ -99,109 +102,109 @@ def ignored(*exceptions):
 
 
 def resolve_stream_name(streams, stream_name):
-	if stream_name in STREAM_SYNONYMS and stream_name in streams:
-		for name, stream in iteritems(streams):
-			if stream is streams[stream_name] and name not in STREAM_SYNONYMS:
-				return name
+    if stream_name in STREAM_SYNONYMS and stream_name in streams:
+        for name, stream in iteritems(streams):
+            if stream is streams[stream_name] and name not in STREAM_SYNONYMS:
+                return name
 
-	return stream_name
+    return stream_name
 
 
 def format_valid_streams(plugin, streams):
-	delimiter = ", "
-	validstreams = []
+    delimiter = ", "
+    validstreams = []
 
-	for name, stream in sorted(iteritems(streams), key=lambda stream: plugin.stream_weight(stream[0])):
-		if name in STREAM_SYNONYMS:
-			continue
+    for name, stream in sorted(iteritems(streams), key=lambda stream: plugin.stream_weight(stream[0])):
+        if name in STREAM_SYNONYMS:
+            continue
 
-		def synonymfilter(n):
-			return stream is streams[n] and n is not name
+        def synonymfilter(n):
+            return stream is streams[n] and n is not name
 
-		synonyms = list(filter(synonymfilter, streams.keys()))
+        synonyms = list(filter(synonymfilter, streams.keys()))
 
-		if len(synonyms) > 0:
-			joined = delimiter.join(synonyms)
-			name = "{0} ({1})".format(name, joined)
+        if len(synonyms) > 0:
+            joined = delimiter.join(synonyms)
+            name = "{0} ({1})".format(name, joined)
 
-		validstreams.append(name)
+        validstreams.append(name)
 
-	return delimiter.join(validstreams)
+    return delimiter.join(validstreams)
 
 
 def test_stream(plugin, args, stream):
-	prebuffer = None
-	retry_open = args.retry_open if True else 1
-	for i in list(range(retry_open)):
-		stream_fd = None
-		try:
-			stream_fd = stream.open()
-			LOGGER.debug("Pre-buffering 8192 bytes")
-			prebuffer = stream_fd.read(8192)
-		except StreamError as err:
-			LOGGER.error("Try {0}/{1}: Could not open stream {2} ({3})".format(i + 1, retry_open, stream, err))
-			return stream_fd, prebuffer
-		except IOError as err:
-			stream_fd.close()
-			LOGGER.error("Failed to read data from stream: {0}".format(err))
-		else:
-			break
+    prebuffer = None
+    retry_open = args.retry_open if True else 1
+    for i in list(range(retry_open)):
+        stream_fd = None
+        try:
+            stream_fd = stream.open()
+            LOGGER.debug("Pre-buffering 8192 bytes")
+            prebuffer = stream_fd.read(8192)
+        except StreamError as err:
+            LOGGER.error("Try {0}/{1}: Could not open stream {2} ({3})".format(i + 1, retry_open, stream, err))
+            return stream_fd, prebuffer
+        except IOError as err:
+            stream_fd.close()
+            LOGGER.error("Failed to read data from stream: {0}".format(err))
+        else:
+            break
 
-	if not prebuffer:
-		if stream_fd is not None:
-			stream_fd.close()
-		LOGGER.error("No data returned from stream")
+    if not prebuffer:
+        if stream_fd is not None:
+            stream_fd.close()
+        LOGGER.error("No data returned from stream")
 
-	return stream_fd, prebuffer
+    return stream_fd, prebuffer
 
 
 def log_current_arguments(streamlink, args, url, quality):
-	global PARSER, LOGGER
+    global PARSER, LOGGER
 
-	if not logger.root.isEnabledFor(logging.DEBUG):
-		return
+    if not logger.root.isEnabledFor(logging.DEBUG):
+        return
 
-	sensitive = set()
-	for pname, plugin in iteritems(streamlink.plugins):
-		for parg in plugin.arguments:
-			if parg.sensitive:
-				sensitive.add(parg.argument_name(pname))
+    sensitive = set()
+    for pname, plugin in iteritems(streamlink.plugins):
+        for parg in plugin.arguments:
+            if parg.sensitive:
+                sensitive.add(parg.argument_name(pname))
 
-	LOGGER.debug("Arguments:")
-	LOGGER.debug(" url={0}".format(url))
-	LOGGER.debug(" stream={0}".format(quality.split(",")))
-	for action in parser._actions:
-		if not hasattr(args, action.dest):
-			continue
-		value = getattr(args, action.dest)
-		if action.default != value:
-			name = next(  # pragma: no branch
-				(option for option in action.option_strings if option.startswith("--")),
-				action.option_strings[0]
-			) if action.option_strings else action.dest
-			LOGGER.debug(" {0}={1}".format(name, value if name not in sensitive else '*' * 8))
+    LOGGER.debug("Arguments:")
+    LOGGER.debug(" url={0}".format(url))
+    LOGGER.debug(" stream={0}".format(quality.split(",")))
+    for action in PARSER._actions:
+        if not hasattr(args, action.dest):
+            continue
+        value = getattr(args, action.dest)
+        if action.default != value:
+            name = next(  # pragma: no branch
+                (option for option in action.option_strings if option.startswith("--")),
+                action.option_strings[0]
+            ) if action.option_strings else action.dest
+            LOGGER.debug(" {0}={1}".format(name, value if name not in sensitive else '*' * 8))
 
 
 def sendHeaders(http, status=200, type="text/html"):
-	http.send_response(status)
-	http.send_header('Server', 'Enigma2 Streamlink')
-	http.send_header('Content-type', type)
-	http.end_headers()
+    http.send_response(status)
+    http.send_header("Server", "Enigma2 Streamlink")
+    http.send_header("Content-type", type)
+    http.end_headers()
 
 
 def sendOfflineMP4(http, send_headers=True):
-	LOGGER.debug("Send Offline clip")
-	if send_headers:
-		sendHeaders(http, type="video/mp4")
+    LOGGER.debug("Send Offline clip")
+    if send_headers:
+        sendHeaders(http, type="video/mp4")
 
-	http.wfile.write(open("/usr/share/offline.mp4", "rb").read())
+    http.wfile.write(open("/usr/share/offline.mp4", "rb").read())
 
 
 def stream_to_url(stream):
-	try:
-		return stream.to_url()
-	except TypeError:
-		return None
+    try:
+        return stream.to_url()
+    except TypeError:
+        return None
 
 
 class ArgumentParser(argparse.ArgumentParser):
@@ -349,7 +352,6 @@ def build_parser():
         type=comma_list_filter(STREAM_PASSTHROUGH),
         default=[],
     )
-
     http = PARSER.add_argument_group("HTTP options")
     http.add_argument(
         "--http-proxy",
@@ -505,6 +507,10 @@ def build_parser():
         metavar="TIMEOUT",
     )
     transport.add_argument(
+        "--http-add-audio",
+        metavar="URL",
+    )
+    transport.add_argument(
         "--ringbuffer-size",
         metavar="SIZE",
         type=filesize,
@@ -593,6 +599,11 @@ def build_parser():
 
     stream = PARSER.add_argument_group("Stream options")
     stream.add_argument(
+        "--default-stream",
+        type=comma_list,
+        metavar="STREAM",
+    )
+    stream.add_argument(
         "--stream-types", "--stream-priority",
         metavar="TYPES",
         type=comma_list,
@@ -680,6 +691,8 @@ def setupTransportOpts(streamlink, args):
     if args.hds_timeout:
         streamlink.set_option("hds-timeout", args.hds_timeout)
 
+    if args.http_add_audio:
+        streamlink.set_option("http-add-audio", args.http_add_audio)
     if args.http_stream_timeout:
         streamlink.set_option("http-stream-timeout", args.http_stream_timeout)
 
@@ -799,376 +812,388 @@ def setup_config_files(streamlink, url):
 
 
 def Stream(streamlink, http, url, argstr, quality):
-	global PARSER, _loglevel
+    global PARSER, _loglevel
 
-	fd = None
-	not_stream_opened = True
-	try:
-		# setup plugin, http & stream specific options
-		args = plugin = None
-		if PARSER:
-			global PLUGIN_ARGS
-			if not PLUGIN_ARGS:
-				PLUGIN_ARGS = setup_plugin_args(streamlink)
-			config_files, plugin = setup_config_files(streamlink, url)
-			if config_files or argstr:
-				arglist = argsplit(" -{}".format(argstr[0])) if argstr else []
-				try:
-					args = setup_args(arglist, config_files=config_files, ignore_unknown=False)
-				except Exception:
-					return sendOfflineMP4(http, send_headers=not_stream_opened)
-				else:
-					_loglevel = args.loglevel
-					logger.root.setLevel(_loglevel)
-					setupHttpSession(streamlink, args)
-					setupTransportOpts(streamlink, args)
+    fd = None
+    not_stream_opened = True
+    try:
+        # setup plugin, http & stream specific options
+        args = plugin = None
+        if PARSER:
+            global PLUGIN_ARGS
+            if not PLUGIN_ARGS:
+                PLUGIN_ARGS = setup_plugin_args(streamlink)
+            config_files, plugin = setup_config_files(streamlink, url)
+            if config_files or argstr:
+                arglist = argsplit(" -{}".format(argstr[0])) if argstr else []
+                try:
+                    args = setup_args(arglist, config_files=config_files, ignore_unknown=False)
+                except Exception:
+                    return sendOfflineMP4(http, send_headers=not_stream_opened)
+                else:
+                    _loglevel = args.loglevel
+                    logger.root.setLevel(_loglevel)
+                    setupHttpSession(streamlink, args)
+                    setupTransportOpts(streamlink, args)
 
-		if not plugin:
-			plugin = streamlink.resolve_url(url)
+        if not plugin:
+            plugin = streamlink.resolve_url(url)
 
-		if PARSER and PLUGIN_ARGS and args:
-			setup_plugin_options(streamlink, plugin, args)
-			log_current_arguments(streamlink, args, url, quality)
+        if PARSER and PLUGIN_ARGS and args:
+            setup_plugin_options(streamlink, plugin, args)
+            log_current_arguments(streamlink, args, url, quality)
 
-		LOGGER.info("Found matching plugin {0} for URL {1}".format(plugin.module, url))
-		if args:
-			streams = plugin.streams(stream_types=args.stream_types, sorting_excludes=args.stream_sorting_excludes)
+        LOGGER.info("Found matching plugin {0} for URL {1}".format(plugin.module, url))
+        if args:
+            streams = plugin.streams(stream_types=args.stream_types, sorting_excludes=args.stream_sorting_excludes)
 
-		if any((not streams, not args)):
-			LOGGER.error("No playable streams found on this URL: {0}".format(url))
-			return sendOfflineMP4(http, send_headers=not_stream_opened)
+        if any((not streams, not args)):
+            LOGGER.error("No playable streams found on this URL: {0}".format(url))
+            return sendOfflineMP4(http, send_headers=not_stream_opened)
 
-		LOGGER.info("Available streams:\n{0}".format(format_valid_streams(plugin, streams)))
-		stream = None
-		for stream_name in (resolve_stream_name(streams, s.strip()) for s in quality.split(',')):
-			if stream_name in streams:
-				stream = True
-				break
+        LOGGER.info("Available streams: {0}".format(format_valid_streams(plugin, streams)))
+        stream = None
+        for stream_name in (resolve_stream_name(streams, s.strip()) for s in quality.split(',')):
+            if stream_name in streams:
+                stream = True
+                break
 
-		if not stream:
-			if "best" in streams:
-				stream_name = "best"
-				LOGGER.info("The specified stream(s) '{0}' could not be found, using '{1}' stream".format(quality, stream_name))
-			else:
-				LOGGER.error("The specified stream(s) '{0}' could not be found".format(quality))
-				return sendOfflineMP4(http, send_headers=not_stream_opened)
+        if not stream:
+            if "best" in streams:
+                stream_name = "best"
+                LOGGER.info("The specified stream(s) '{0}' could not be found, using '{1}' stream".format(quality, stream_name))
+            else:
+                LOGGER.error("The specified stream(s) '{0}' could not be found".format(quality))
+                return sendOfflineMP4(http, send_headers=not_stream_opened)
 
-		if not stream_name.endswith("_alt") and stream_name not in STREAM_SYNONYMS:
-			def _name_contains_alt(k):
-				return k.startswith(stream_name) and "_alt" in k
+        if not stream_name.endswith("_alt") and stream_name not in STREAM_SYNONYMS:
+            def _name_contains_alt(k):
+                return k.startswith(stream_name) and "_alt" in k
 
-			alt_streams = list(
-				filter(lambda k: _name_contains_alt(k),
-				sorted(streams.keys())))
-		else:
-			alt_streams = []
+            alt_streams = list(filter(lambda k: _name_contains_alt(k), sorted(streams.keys())))
+        else:
+            alt_streams = []
 
-		prebuffer = None
-		stream_names = [stream_name] + alt_streams
-		for stream_name in stream_names:
-			stream = streams[stream_name]
-			stream_type = type(stream).shortname()
-			LOGGER.info("Opening stream: {0} ({1})".format(stream_name, stream_type))
-			if stream_type in args.player_passthrough:
-				LOGGER.debug('301 Passthrough - URL: {0}'.format(stream_to_url(stream)))
-				http.send_response(301)
-				http.send_header('Location', stream_to_url(stream))
-				return http.end_headers()
+        if args.http_add_audio:
+            http_add_audio = HTTPStream(streamlink, args.http_add_audio)
+        else:
+            http_add_audio = False
+        prebuffer = None
+        stream_names = [stream_name] + alt_streams
+        for stream_name in stream_names:
+            stream = streams[stream_name]
+            stream_type = type(stream).shortname()
 
-			fd, prebuffer = test_stream(plugin, args, stream)
-			if prebuffer:
-				break
+            if http_add_audio and stream_type in ("hls", "http", "rtmp"):
+                stream = MuxedStream(streamlink, stream, http_add_audio, add_audio=True)
+                stream_type = "muxed-stream"
 
-		if not prebuffer:
-			raise StreamError("Could not open stream {0}, tried {1} times, exiting", stream, args.retry_open)
+            LOGGER.info("Opening stream: {0} ({1})".format(stream_name, stream_type))
+            if stream_type in args.player_passthrough:
+                LOGGER.debug("301 Passthrough - URL: {0}".format(stream_to_url(stream)))
+                http.send_response(301)
+                http.send_header("Location", stream_to_url(stream))
+                return http.end_headers()
 
-		LOGGER.debug("Writing stream to player")
-		not_stream_opened = False
-		sendHeaders(http)
-		http.wfile.write(prebuffer)
-		shutil.copyfileobj(fd, http.wfile)
-	except NoPluginError:
-		LOGGER.error("No plugin can handle URL: {0}".format(url))
-		sendOfflineMP4(http, send_headers=not_stream_opened)
-	except (PluginError, FatalPluginError, StreamError, NoStreamsError) as err:
-		LOGGER.error(err)
-		sendOfflineMP4(http, send_headers=not_stream_opened)
-	except socket.error as err:
-		if err.errno != errno.EPIPE:
-			# Not a broken pipe
-			raise
-		else:
-			# player disconnected
-			LOGGER.info('Detected player disconnect')
-	except Exception as err:
-		if not_stream_opened and LOGLEVEL not in ("debug", "trace"):
-			LOGGER.error("Got exception: {0}".format(err))
-		else:
-			LOGGER.error("Got exception: {0}\n{1}".format(err, traceback.format_exc().splitlines()))
+            fd, prebuffer = test_stream(plugin, args, stream)
+            if prebuffer:
+                break
 
-		sendOfflineMP4(http, send_headers=not_stream_opened)
-	finally:
-		if fd:
-			LOGGER.info("Stream ended")
-			fd.close()
-			LOGGER.info("Closing currently open stream...")
+        if not prebuffer:
+            raise StreamError("Could not open stream {0}, tried {1} times, exiting", stream, args.retry_open)
+
+        LOGGER.debug("Writing stream to player")
+        not_stream_opened = False
+        sendHeaders(http)
+        http.wfile.write(prebuffer)
+        shutil.copyfileobj(fd, http.wfile)
+    except NoPluginError:
+        LOGGER.error("No plugin can handle URL: {0}".format(url))
+        sendOfflineMP4(http, send_headers=not_stream_opened)
+    except (PluginError, FatalPluginError, StreamError, NoStreamsError) as err:
+        LOGGER.error(err)
+        sendOfflineMP4(http, send_headers=not_stream_opened)
+    except socket.error as err:
+        if err.errno != errno.EPIPE:
+            # Not a broken pipe
+            raise
+        else:
+            # player disconnected
+            LOGGER.info('Detected player disconnect')
+    except Exception as err:
+        if not_stream_opened and LOGLEVEL not in ("debug", "trace"):
+            LOGGER.error("Got exception: {0}".format(err))
+        else:
+            LOGGER.error("Got exception: {0}\n{1}".format(err, traceback.format_exc().splitlines()))
+
+        sendOfflineMP4(http, send_headers=not_stream_opened)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        if fd:
+            LOGGER.info("Stream ended")
+            fd.close()
+            LOGGER.info("Closing currently open stream...")
 
 
 class Streamlink2(Streamlink):
-	_loaded_plugins = None
+    _loaded_plugins = None
 
-	def load_builtin_plugins(self):
-		if self.__class__._loaded_plugins is not None:
-			self._update_loaded_plugins()
-		else:
-			self.load_plugins(plugins.__path__[0])
-			if os.path.isdir(PLUGINS_DIR):
-				self.load_ext_plugins([PLUGINS_DIR])
-			self.__class__._loaded_plugins = self.plugins.copy()
+    def load_builtin_plugins(self):
+        if self.__class__._loaded_plugins is not None:
+            self._update_loaded_plugins()
+        else:
+            self.load_plugins(plugins.__path__[0])
+            if os.path.isdir(PLUGINS_DIR):
+                self.load_ext_plugins([PLUGINS_DIR])
+            self.__class__._loaded_plugins = self.plugins.copy()
 
-	def _update_loaded_plugins(self):
-		self.plugins = self.__class__._loaded_plugins.copy()
-		for plugin in itervalues(self.plugins):
-			plugin.session = self
+    def _update_loaded_plugins(self):
+        self.plugins = self.__class__._loaded_plugins.copy()
+        for plugin in itervalues(self.plugins):
+            plugin.session = self
 
-	def load_ext_plugins(self, dirs):
-		dirs = [os.path.expanduser(d) for d in dirs]
-		for directory in dirs:
-			if os.path.isdir(directory):
-				self.load_plugins(directory)
-			else:
-				LOGGER.warning("Plugin path {0} does not exist or is not "
-							"a directory!".format(directory))
+    def load_ext_plugins(self, dirs):
+        dirs = [os.path.expanduser(d) for d in dirs]
+        for directory in dirs:
+            if os.path.isdir(directory):
+                self.load_plugins(directory)
+            else:
+                LOGGER.warning("Plugin path {0} does not exist or is not a directory!".format(directory))
 
 
 class StreamHandler(BaseHTTPRequestHandler):
 
-	def do_HEAD(s):
-		sendHeaders(s)
+    def do_HEAD(s):
+        sendHeaders(s)
 
-	def do_GET(s):
-		url = unquote(s.path[1:])
-		quality = "best"
+    def do_GET(s):
+        url = unquote(s.path[1:])
+        quality = "best"
 
-		if url.startswith("q=") and url.index("/") > 0:
-			i = url.index("/")
-			quality = url[2:i]
-			quality = quality.replace(" ", "")
-			url = url[i + 1:]
-		url = url.split(' -', 1)
-		LOGGER.trace("Processing URL: {0}".format(url[0].strip()))
+        if url.startswith("q=") and url.index("/") > 0:
+            i = url.index("/")
+            quality = url[2:i]
+            quality = quality.replace(" ", "")
+            url = url[i + 1:]
+        url = url.split(' -', 1)
+        LOGGER.trace("Processing URL: {0}".format(url[0].strip()))
 
-		with warnings.catch_warnings():
-			warnings.simplefilter("ignore")
-			streamlink = Streamlink2()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            streamlink = Streamlink2()
 
-		return Stream(streamlink, s, url[0].strip(), url[1:2], quality)
+        return Stream(streamlink, s, url[0].strip(), url[1:2], quality)
 
-	def finish(self, *args, **kw):
-		try:
-			if not self.wfile.closed:
-				self.wfile.flush()
-				self.wfile.close()
-		except socket.error:
-			pass
-		self.rfile.close()
+    def finish(self, *args, **kw):
+        try:
+            if not self.wfile.closed:
+                self.wfile.flush()
+                self.wfile.close()
+        except socket.error:
+            pass
+        self.rfile.close()
 
-	def handle(self):
-		try:
-			BaseHTTPRequestHandler.handle(self)
-		except socket.error:
-			pass
+    def handle(self):
+        try:
+            BaseHTTPRequestHandler.handle(self)
+        except socket.error:
+            pass
 
-	if LOGLEVEL not in ("trace",):
-		def log_message(self, format, *args):
-			return
+    if LOGLEVEL not in ("trace",):
+        def log_message(self, format, *args):
+            return
 
 
 class ThreadedHTTPServer(ForkingMixIn, HTTPServer):
-	"""Handle requests in a separate thread."""
+    """Handle requests in a separate thread."""
 
 
 def start():
-	def setup_logging(stream=sys.stdout, level="info"):
-		fmt = ("[{asctime},{msecs:0.0f}]" if level == "trace" else "") + "[{name}][{levelname}] {message}"
-		logger.basicConfig(stream=stream, level=level, format=fmt, style="{", datefmt="%H:%M:%S")
+    def setup_logging(stream=sys.stdout, level="info"):
+        fmt = ("[{asctime},{msecs:0.0f}]" if level == "trace" else "") + "[{name}][{levelname}] {message}"
+        logger.basicConfig(stream=stream, level=level, format=fmt, style="{", datefmt="%H:%M:%S")
 
-	global LOGGER, PARSER
-	setup_logging(level=LOGLEVEL)
-	PARSER = build_parser()
+    global LOGGER, PARSER
+    setup_logging(level=LOGLEVEL)
+    PARSER = build_parser()
 
-	httpd = ThreadedHTTPServer(("", PORT_NUMBER), StreamHandler)
-	LOGGER.info(" {0} Server ({1}) started".format(time.asctime(), __version__))
-	LOGGER.debug("Host:           {0}".format(hostname()))
-	LOGGER.debug("Port:           {0}".format(PORT_NUMBER))
-	LOGGER.debug("OS:             {0}".format(platform.platform()))
-	LOGGER.debug("Python:         {0}".format(platform.python_version()))
-	LOGGER.info(" Streamlink:     {0}".format(streamlink_version))
-	LOGGER.debug("youtube-dl:     {0}".format(ytdl_version))
-	LOGGER.debug("Requests({0}), Socks({1}), Websocket({2})".format(requests_version, socks_version, websocket_version))
+    httpd = ThreadedHTTPServer(("", PORT_NUMBER), StreamHandler)
+    LOGGER.info(" {0} Server ({1}) started".format(time.asctime(), __version__))
+    LOGGER.debug("Host:           {0}".format(hostname()))
+    LOGGER.debug("Port:           {0}".format(PORT_NUMBER))
+    LOGGER.debug("OS:             {0}".format(platform.platform()))
+    LOGGER.debug("Python:         {0}".format(platform.python_version()))
+    LOGGER.info(" Streamlink:     {0}".format(streamlink_version))
+    LOGGER.debug("youtube-dl:     {0}".format(ytdl_version))
+    LOGGER.debug("optparser:      {0}".format(__optparserversion__))
+    LOGGER.debug("Requests({0}), Socks({1}), Websocket({2})".format(requests_version, socks_version, websocket_version))
 
-	streamlink = Streamlink2()
-	del streamlink
+    streamlink = Streamlink2()
+    del streamlink
+    signal.signal(signal.SIGTSTP, signal.default_int_handler)
+    signal.signal(signal.SIGQUIT, signal.default_int_handler)
+    signal.signal(signal.SIGTERM, signal.default_int_handler)
 
-	try:
-		httpd.serve_forever()
-	except KeyboardInterrupt:
-		pass
-	httpd.server_close()
-	LOGGER.info("{0} Server stopped - Host: {1}, Port: {2}".format(time.asctime(), hostname(), PORT_NUMBER))
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        LOGGER.info("Interrupted! Exiting...")
+    httpd.server_close()
+    LOGGER.info("{0} Server stopped - Host: {1}, Port: {2}".format(time.asctime(), hostname(), PORT_NUMBER))
 
 
 class Daemon:
-	"""
-	A generic daemon class.
+    """
+    A generic daemon class.
 
-	Usage: subclass the Daemon class and override the run() method
-	"""
+    Usage: subclass the Daemon class and override the run() method
+    """
 
-	def __init__(self, pidfile, stdin="/dev/null", stdout="/dev/null", stderr="/dev/null"):
-		self.stdin = stdin
-		self.stdout = stdout
-		self.stderr = stderr
-		self.pidfile = pidfile
+    def __init__(self, pidfile, stdin="/dev/null", stdout="/dev/null", stderr="/dev/null"):
+        self.stdin = stdin
+        self.stdout = stdout
+        self.stderr = stderr
+        self.pidfile = pidfile
 
-	def daemonize(self):
-		"""
-		do the UNIX double-fork magic, see Stevens' "Advanced
-		Programming in the UNIX Environment" for details (ISBN 0201563177)
-		http://www.erlenstar.demon.co.uk/unix/faq_2.html#SEC16
-		"""
-		try:
-			pid = os.fork()
-			if pid > 0:
-				# exit first parent
-				sys.exit(0)
-		except OSError as e:
-			sys.stderr.write("fork #1 failed: %d (%s)\n" % (e.errno, e.strerror))
-			sys.exit(1)
+    def daemonize(self):
+        """
+        do the UNIX double-fork magic, see Stevens' "Advanced
+        Programming in the UNIX Environment" for details (ISBN 0201563177)
+        http://www.erlenstar.demon.co.uk/unix/faq_2.html#SEC16
+        """
+        try:
+            pid = os.fork()
+            if pid > 0:
+                # exit first parent
+                sys.exit(0)
+        except OSError as e:
+            sys.stderr.write("fork #1 failed: %d (%s)\n" % (e.errno, e.strerror))
+            sys.exit(1)
 
-		# decouple from parent environment
-		os.chdir("/")
-		os.setsid()
-		os.umask(0)
+        # decouple from parent environment
+        os.chdir("/")
+        os.setsid()
+        os.umask(0)
 
-		# do second fork
-		try:
-			pid = os.fork()
-			if pid > 0:
-				# exit from second parent
-				sys.exit(0)
-		except OSError as e:
-			sys.stderr.write("fork #2 failed: %d (%s)\n" % (e.errno, e.strerror))
-			sys.exit(1)
+        # do second fork
+        try:
+            pid = os.fork()
+            if pid > 0:
+                # exit from second parent
+                sys.exit(0)
+        except OSError as e:
+            sys.stderr.write("fork #2 failed: %d (%s)\n" % (e.errno, e.strerror))
+            sys.exit(1)
 
-		# redirect standard file descriptors
-		sys.stdout.flush()
-		sys.stderr.flush()
-		si = open(self.stdin, "r")
-		so = open(self.stdout, "a+")
-		se = open(self.stderr, "a+")
-		os.dup2(si.fileno(), sys.stdin.fileno())
-		os.dup2(so.fileno(), sys.stdout.fileno())
-		os.dup2(se.fileno(), sys.stderr.fileno())
+        # redirect standard file descriptors
+        sys.stdout.flush()
+        sys.stderr.flush()
+        si = open(self.stdin, "r")
+        so = open(self.stdout, "a+")
+        se = open(self.stderr, "a+")
+        os.dup2(si.fileno(), sys.stdin.fileno())
+        os.dup2(so.fileno(), sys.stdout.fileno())
+        os.dup2(se.fileno(), sys.stderr.fileno())
 
-		# write pidfile
-		atexit.register(self.delpid)
-		pid = str(os.getpid())
-		open(self.pidfile, "w+").write("%s\n" % pid)
+        # write pidfile
+        atexit.register(self.delpid)
+        pid = str(os.getpid())
+        open(self.pidfile, "w+").write("%s\n" % pid)
 
-	def delpid(self):
-		os.remove(self.pidfile)
+    def delpid(self):
+        os.remove(self.pidfile)
 
-	def start(self):
-		"""
-		Start the daemon
-		"""
-		# Check for a pidfile to see if the daemon already runs
-		try:
-			pf = open(self.pidfile, "r")
-			pid = int(pf.read().strip())
-			pf.close()
-		except IOError:
-			pid = None
+    def start(self):
+        """
+        Start the daemon
+        """
+        # Check for a pidfile to see if the daemon already runs
+        try:
+            pf = open(self.pidfile, "r")
+            pid = int(pf.read().strip())
+            pf.close()
+        except IOError:
+            pid = None
 
-		if pid:
-			message = "pidfile %s already exist. Daemon already running?\n"
-			sys.stderr.write(message % self.pidfile)
-			sys.exit(1)
+        if pid:
+            message = "pidfile %s already exist. Daemon already running?\n"
+            sys.stderr.write(message % self.pidfile)
+            sys.exit(1)
 
-		# Start the daemon
-		self.daemonize()
-		self.run()
+        # Start the daemon
+        self.daemonize()
+        self.run()
 
-	def stop(self):
-		"""
-		Stop the daemon
-		"""
-		# Get the pid from the pidfile
-		try:
-			pf = open(self.pidfile, "r")
-			pid = int(pf.read().strip())
-			pf.close()
-		except IOError:
-			pid = None
+    def stop(self):
+        """
+        Stop the daemon
+        """
+        # Get the pid from the pidfile
+        try:
+            pf = open(self.pidfile, "r")
+            pid = int(pf.read().strip())
+            pf.close()
+        except IOError:
+            pid = None
 
-		if not pid:
-			message = "pidfile %s does not exist. Daemon not running?\n"
-			sys.stderr.write(message % self.pidfile)
-			return # not an error in a restart
+        if not pid:
+            message = "pidfile %s does not exist. Daemon not running?\n"
+            sys.stderr.write(message % self.pidfile)
+            return  # not an error in a restart
 
-		# Try killing the daemon process
-		try:
-			while 1:
-				os.kill(pid, signal.SIGTERM)
-				time.sleep(0.1)
-		except OSError as err:
-			err = str(err)
-			if err.find("No such process") > 0:
-				if os.path.exists(self.pidfile):
-					os.remove(self.pidfile)
-			else:
-				print(str(err))
-				sys.exit(1)
+        # Try killing the daemon process
+        try:
+            while 1:
+                os.kill(pid, signal.SIGTERM)
+                time.sleep(0.1)
+        except OSError as err:
+            err = str(err)
+            if err.find("No such process") > 0:
+                if os.path.exists(self.pidfile):
+                    os.remove(self.pidfile)
+            else:
+                print(str(err))
+                sys.exit(1)
 
-	def restart(self):
-		"""
-		Restart the daemon
-		"""
-		self.stop()
-		self.start()
+    def restart(self):
+        """
+        Restart the daemon
+        """
+        self.stop()
+        self.start()
 
-	def run(self):
-		"""
-		You should override this method when you subclass Daemon. It will be called after the process has been
-		daemonized by start() or restart().
-		"""
+    def run(self):
+        """
+        You should override this method when you subclass Daemon. It will be called after the process has been
+        daemonized by start() or restart().
+        """
 
 
 class StreamlinkDaemon(Daemon):
-	def run(self):
-		start()
+    def run(self):
+        start()
 
 
 if __name__ == "__main__":
-	daemon = StreamlinkDaemon("/var/run/streamlink.pid")
-	if len(sys.argv) >= 2:
-		if "start" == sys.argv[1]:
-			daemon.start()
-		elif "stop" == sys.argv[1]:
-			daemon.stop()
-		elif "restart" == sys.argv[1]:
-			daemon.restart()
-		elif "manualstart" == sys.argv[1]:
-			daemon.stop()
-			if len(sys.argv) > 2 and sys.argv[2] in ("debug", "trace"):
-				_loglevel = LOGLEVEL = sys.argv[2]
-			start()
-		else:
-			print("Unknown command")
-			sys.exit(2)
-		sys.exit(0)
-	else:
-		print("usage: %s start|stop|restart|manualstart" % sys.argv[0])
-		print("		  manualstart include a stop")
-		sys.exit(2)
+    daemon = StreamlinkDaemon("/var/run/streamlink.pid")
+    if len(sys.argv) >= 2:
+        if "start" == sys.argv[1]:
+            daemon.start()
+        elif "stop" == sys.argv[1]:
+            daemon.stop()
+        elif "restart" == sys.argv[1]:
+            daemon.restart()
+        elif "manualstart" == sys.argv[1]:
+            daemon.stop()
+            if len(sys.argv) > 2 and sys.argv[2] in ("debug", "trace"):
+                _loglevel = LOGLEVEL = sys.argv[2]
+            start()
+        else:
+            print("Unknown command")
+            sys.exit(2)
+        sys.exit(0)
+    else:
+        print("usage: %s start|stop|restart|manualstart" % sys.argv[0])
+        print("		  manualstart include a stop")
+        sys.exit(2)
