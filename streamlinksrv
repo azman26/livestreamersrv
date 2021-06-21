@@ -8,7 +8,7 @@
 #
 
 __version__ = "1.8.2"
-__optparserversion__ = "0.2.8"
+__optparserversion__ = "0.2.9"
 
 import argparse
 import atexit
@@ -73,13 +73,15 @@ STREAM_SYNONYMS = ["best", "worst", "best-unfiltered", "worst-unfiltered"]
 PARSER = None
 PLUGIN_ARGS = False
 
-STREAM_PASSTHROUGH = ["hls", "http"]
+STREAM_PASSTHROUGH = ["hls", "http", "hls-multi", "dash"]
 XDG_CONFIG_HOME = "/home/root/.config"
+XDG_STATE_HOME = "/home/root/.local/state"
 CONFIG_FILES = [
     os.path.expanduser(XDG_CONFIG_HOME + "/streamlink/config"),
     os.path.expanduser(XDG_CONFIG_HOME + "/.streamlinkrc")
 ]
 PLUGINS_DIR = os.path.expanduser(XDG_CONFIG_HOME + "/streamlink/plugins")
+LOG_DIR = os.path.expanduser(XDG_STATE_HOME + "/streamlink/logs")
 
 _printable_re = re.compile(r"[{0}]".format(printable))
 _option_re = re.compile(r"""
@@ -229,62 +231,6 @@ class ArgumentParser(argparse.ArgumentParser):
         LOGGER.error(message)
 
 
-def setup_plugin_options(streamlink, plugin, args):
-    pname = plugin.module
-    required = OrderedDict({})
-    for parg in plugin.arguments:
-        if parg.options.get("help") == argparse.SUPPRESS:
-            continue
-
-        value = getattr(args, parg.dest if parg.is_global else parg.namespace_dest(pname))
-        streamlink.set_plugin_option(pname, parg.dest, value)
-
-        if not parg.is_global:
-            if parg.required:
-                required[parg.name] = parg
-            # if the value is set, check to see if any of the required arguments are not set
-            if parg.required or value:
-                try:
-                    for rparg in plugin.arguments.requires(parg.name):
-                        required[rparg.name] = rparg
-                except RuntimeError:
-                    LOGGER.error("{0} plugin has a configuration error and the arguments cannot be parsed".format(pname))
-                    break
-
-    if required:
-        for req in required.values():
-            if not streamlink.get_plugin_option(pname, req.dest):
-                streamlink.set_plugin_option(pname, req.dest, "")
-
-
-def setup_plugin_args(streamlink):
-    """Sets Streamlink plugin options."""
-
-    plugin_args = PARSER.add_argument_group("Plugin options")
-    for pname, plugin in streamlink.plugins.items():
-        defaults = {}
-        for parg in plugin.arguments:
-            if not parg.is_global:
-                plugin_args.add_argument(parg.argument_name(pname), **parg.options)
-                defaults[parg.dest] = parg.default
-            else:
-                pargdest = parg.dest
-                for action in PARSER._actions:
-                    # find matching global argument
-                    if pargdest != action.dest:
-                        continue
-                    defaults[pargdest] = action.default
-
-                    # add plugin to global argument
-                    plugins = getattr(action, "plugins", [])
-                    plugins.append(pname)
-                    setattr(action, "plugins", plugins)
-
-        plugin.options = PluginOptions(defaults)
-
-    return True
-
-
 class HelpFormatter(argparse.RawDescriptionHelpFormatter):
     def __init__(self, max_help_position=4, *args, **kwargs):
         # A smaller indent for args help.
@@ -332,6 +278,10 @@ def build_parser():
         default=DEFAULT_LEVEL,
     )
     general.add_argument(
+        "--logfile",
+        metavar="FILE",
+    )
+    general.add_argument(
         "--interface",
         type=str,
         metavar="INTERFACE",
@@ -352,6 +302,7 @@ def build_parser():
         type=comma_list_filter(STREAM_PASSTHROUGH),
         default=[],
     )
+
     http = PARSER.add_argument_group("HTTP options")
     http.add_argument(
         "--http-proxy",
@@ -693,6 +644,7 @@ def setupTransportOpts(streamlink, args):
 
     if args.http_add_audio:
         streamlink.set_option("http-add-audio", args.http_add_audio)
+
     if args.http_stream_timeout:
         streamlink.set_option("http-stream-timeout", args.http_stream_timeout)
 
@@ -783,16 +735,62 @@ def setupHttpSession(streamlink, args):
         streamlink.set_option("http-timeout", args.http_timeout)
 
 
-def setup_args(arglist, config_files=[], ignore_unknown=False):
-    for config_file in filter(os.path.isfile, config_files):
-        arglist.insert(0, "@" + config_file)
+def setup_plugin_args(streamlink):
+    """Sets Streamlink plugin options."""
 
-    args, unknown = PARSER.parse_known_args(arglist)
+    plugin_args = PARSER.add_argument_group("Plugin options")
+    for pname, plugin in streamlink.plugins.items():
+        defaults = {}
+        for parg in plugin.arguments:
+            if not parg.is_global:
+                plugin_args.add_argument(parg.argument_name(pname), **parg.options)
+                defaults[parg.dest] = parg.default
+            else:
+                pargdest = parg.dest
+                for action in PARSER._actions:
+                    # find matching global argument
+                    if pargdest != action.dest:
+                        continue
+                    defaults[pargdest] = action.default
 
-    if unknown and not ignore_unknown:
-        PARSER.error("unrecognized arguments: {0}".format(' '.join(unknown)))
+                    # add plugin to global argument
+                    plugins = getattr(action, "plugins", [])
+                    plugins.append(pname)
+                    setattr(action, "plugins", plugins)
 
-    return args
+        plugin.options = PluginOptions(defaults)
+
+    return True
+
+
+
+
+def setup_plugin_options(streamlink, plugin, args):
+    pname = plugin.module
+    required = OrderedDict({})
+    for parg in plugin.arguments:
+        if parg.options.get("help") == argparse.SUPPRESS:
+            continue
+
+        value = getattr(args, parg.dest if parg.is_global else parg.namespace_dest(pname))
+        streamlink.set_plugin_option(pname, parg.dest, value)
+
+        if not parg.is_global:
+            if parg.required:
+                required[parg.name] = parg
+            # if the value is set, check to see if any of the required arguments are not set
+            if parg.required or value:
+                try:
+                    for rparg in plugin.arguments.requires(parg.name):
+                        required[rparg.name] = rparg
+                except RuntimeError:
+                    LOGGER.error("{0} plugin has a configuration error and the arguments cannot be parsed".format(pname))
+                    break
+
+    if required:
+        for req in required.values():
+            if not streamlink.get_plugin_option(pname, req.dest):
+                streamlink.set_plugin_option(pname, req.dest, "")
 
 
 def setup_config_files(streamlink, url):
@@ -809,6 +807,28 @@ def setup_config_files(streamlink, url):
         break
 
     return (config_files, plugin)
+
+
+def setup_args(arglist, config_files=[], ignore_unknown=False):
+    for config_file in filter(os.path.isfile, config_files):
+        arglist.insert(0, "@" + config_file)
+
+    args, unknown = PARSER.parse_known_args(arglist)
+
+    if unknown and not ignore_unknown:
+        PARSER.error("unrecognized arguments: {0}".format(' '.join(unknown)))
+
+    return args
+
+
+def conv_argitems_to_arglist(argitems):
+    arglist = []
+    for item in argitems:
+        for option in PARSER.convert_arg_line_to_args(item):
+            arglist.append(option)
+
+    return arglist
+
 
 
 def Stream(streamlink, http, url, argstr, quality):
