@@ -830,7 +830,6 @@ def conv_argitems_to_arglist(argitems):
     return arglist
 
 
-
 def Stream(streamlink, http, url, argstr, quality):
     global PARSER, _loglevel
 
@@ -855,6 +854,9 @@ def Stream(streamlink, http, url, argstr, quality):
                     logger.root.setLevel(_loglevel)
                     setupHttpSession(streamlink, args)
                     setupTransportOpts(streamlink, args)
+
+        if LOGLEVEL in ["trace", "debug"]:
+            logger.root.setLevel(LOGLEVEL)
 
         if not plugin:
             plugin = streamlink.resolve_url(url)
@@ -908,8 +910,11 @@ def Stream(streamlink, http, url, argstr, quality):
                 stream = MuxedStream(streamlink, stream, http_add_audio, add_audio=True)
                 stream_type = "muxed-stream"
 
+            # forece passthrough for YT hls
+            player_passthrough = True if stream_type in ("hls") and plugin.module in ("youtube") else False
+
             LOGGER.info("Opening stream: {0} ({1})".format(stream_name, stream_type))
-            if stream_type in args.player_passthrough:
+            if stream_type in args.player_passthrough or player_passthrough:
                 LOGGER.debug("301 Passthrough - URL: {0}".format(stream_to_url(stream)))
                 http.send_response(301)
                 http.send_header("Location", stream_to_url(stream))
