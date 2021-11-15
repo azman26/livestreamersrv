@@ -7,7 +7,7 @@
 # License: GPLv2+
 #
 
-__version__ = "1.8.2"
+__version__ = "1.8.3"
 __optparserversion__ = "0.3.0"
 
 import argparse
@@ -743,18 +743,18 @@ def setup_plugin_options(streamlink, plugin, args):
 
 def setup_config_files(streamlink, url):
     config_files = []
-    plugin = None
+    pluginclass = None
 
     if url:
         with ignored(NoPluginError):
-            plugin = streamlink.resolve_url(url)
-            config_files += ["{0}.{1}".format(fn, plugin.module) for fn in CONFIG_FILES]
+            pluginclass, resolved_url = streamlink.resolve_url(url)
+            config_files += ["{0}.{1}".format(fn, pluginclass.module) for fn in CONFIG_FILES]
 
     for config_file in filter(os.path.isfile, CONFIG_FILES):
         config_files.append(config_file)
         break
 
-    return (config_files, plugin)
+    return (config_files, pluginclass(resolved_url))
 
 
 def setup_args(arglist, config_files=[], ignore_unknown=False):
@@ -807,7 +807,8 @@ def Stream(streamlink, http, url, argstr, quality):
             logger.root.setLevel(LOGLEVEL)
 
         if not plugin:
-            plugin = streamlink.resolve_url(url)
+            plugin, resolved_url = streamlink.resolve_url(url)
+            plugin = plugin(resolved_url)
 
         if PARSER and PLUGIN_ARGS and args:
             setup_plugin_options(streamlink, plugin, args)
