@@ -38,7 +38,7 @@ from contextlib import contextmanager
 from collections import OrderedDict
 
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from socketserver import ThreadingMixIn as ForkingMixIn
+from socketserver import ForkingMixIn
 
 
 try:
