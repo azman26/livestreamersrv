@@ -168,7 +168,7 @@ def log_current_arguments(streamlink, args, url, quality):
 
     sensitive = set()
     for pname, plugin in iteritems(streamlink.plugins):
-        for parg in plugin.arguments:
+        for parg in plugin.arguments or []:
             if parg.sensitive:
                 sensitive.add(parg.argument_name(pname))
 
@@ -689,7 +689,7 @@ def setup_plugin_args(streamlink):
     plugin_args = PARSER.add_argument_group("Plugin options")
     for pname, plugin in streamlink.plugins.items():
         defaults = {}
-        for parg in plugin.arguments:
+        for parg in plugin.arguments or []:
             if not parg.is_global:
                 plugin_args.add_argument(parg.argument_name(pname), **parg.options)
                 defaults[parg.dest] = parg.default
@@ -711,9 +711,10 @@ def setup_plugin_args(streamlink):
     return True
 
 
-
-
 def setup_plugin_options(streamlink, plugin, args):
+    if plugin.arguments is None:
+        return
+
     pname = plugin.module
     required = OrderedDict({})
     for parg in plugin.arguments:
