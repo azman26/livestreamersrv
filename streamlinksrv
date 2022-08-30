@@ -748,14 +748,14 @@ def setup_config_files(streamlink, url):
 
     if url:
         with ignored(NoPluginError):
-            pluginclass, resolved_url = streamlink.resolve_url(url)
-            config_files += ["{0}.{1}".format(fn, pluginclass.module) for fn in CONFIG_FILES]
+            pluginname, pluginclass, resolved_url = streamlink.resolve_url(url)
+            config_files += ["{0}.{1}".format(fn, pluginname) for fn in CONFIG_FILES]
 
     for config_file in filter(os.path.isfile, CONFIG_FILES):
         config_files.append(config_file)
         break
 
-    return (config_files, pluginclass(resolved_url))
+    return (config_files, pluginclass(streamlink, resolved_url))
 
 
 def setup_args(arglist, config_files=[], ignore_unknown=False):
