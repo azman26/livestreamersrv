@@ -354,13 +354,13 @@ def build_parser():
     http.add_argument(
         "--http-timeout",
         metavar="TIMEOUT",
-        type=num(float, min=0),
+        type=num(float, gt=0),
     )
 
     transport = PARSER.add_argument_group("Stream transport options")
     transport.add_argument(
         "--hds-live-edge",
-        type=num(float, min=0),
+        type=num(float, gt=0),
         metavar="SECONDS",
     )
     transport.add_argument("--hds-segment-attempts", help=argparse.SUPPRESS)
@@ -369,13 +369,13 @@ def build_parser():
     transport.add_argument("--hds-timeout", help=argparse.SUPPRESS)
     transport.add_argument(
         "--hls-live-edge",
-        type=num(int, min=0),
+        type=num(int, ge=1),
         metavar="SEGMENTS",
     )
     transport.add_argument("--hls-segment-stream-data", action="store_true", help=argparse.SUPPRESS)
     transport.add_argument(
         "--hls-playlist-reload-attempts",
-        type=num(int, min=0),
+        type=num(int, ge=1),
         metavar="ATTEMPTS",
     )
     transport.add_argument(
@@ -439,22 +439,22 @@ def build_parser():
     transport.add_argument("--rtmp-timeout", help=argparse.SUPPRESS)
     transport.add_argument(
         "--stream-segment-attempts",
-        type=num(int, min=0),
+        type=num(int, ge=1),
         metavar="ATTEMPTS",
     )
     transport.add_argument(
         "--stream-segment-threads",
-        type=num(int, max=10),
+        type=num(int, ge=1, le=10),
         metavar="THREADS",
     )
     transport.add_argument(
         "--stream-segment-timeout",
-        type=num(float, min=0),
+        type=num(float, gt=0),
         metavar="TIMEOUT",
     )
     transport.add_argument(
         "--stream-timeout",
-        type=num(float, min=0),
+        type=num(float, gt=0),
         metavar="TIMEOUT",
     )
     transport.add_argument(
@@ -524,7 +524,7 @@ def build_parser():
     stream.add_argument(
         "--retry-open",
         metavar="ATTEMPTS",
-        type=num(int, min=0),
+        type=num(int, ge=1),
         default=1,
     )
 
