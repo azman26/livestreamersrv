@@ -52,7 +52,7 @@ from streamlink import Streamlink
 from streamlink import plugins
 from streamlink.exceptions import FatalPluginError
 from streamlink import __version__ as streamlink_version
-from streamlink.plugin import PluginOptions
+from streamlink.options import Options
 from streamlink.utils.args import comma_list, comma_list_filter, filesize, keyvalue, num
 from streamlink.utils.times import hours_minutes_seconds
 from streamlink.stream import HTTPStream
@@ -210,6 +210,23 @@ def stream_to_url(stream):
 
 
 class ArgumentParser(argparse.ArgumentParser):
+    def __init__(self, *args, **kwargs):
+        self.NESTED_ARGUMENT_GROUPS = {}
+        super().__init__(*args, **kwargs)
+
+    def add_argument_group(
+        self,
+        *args,
+        parent = None,
+        **kwargs,
+    ):
+        group = super().add_argument_group(*args, **kwargs)
+        if parent not in self.NESTED_ARGUMENT_GROUPS:
+            self.NESTED_ARGUMENT_GROUPS[parent] = [group]
+        else:
+            self.NESTED_ARGUMENT_GROUPS[parent].append(group)
+        return group
+
     def convert_arg_line_to_args(self, line):
         match = _printable_re.search(line)
         if not match:
@@ -684,62 +701,50 @@ def setupHttpSession(streamlink, args):
 
 
 def setup_plugin_args(streamlink):
-    """Sets Streamlink plugin options."""
+    """Adds plugin argument data to the argument parser."""
 
     plugin_args = PARSER.add_argument_group("Plugin options")
     for pname, plugin in streamlink.plugins.items():
-        defaults = {}
+        group = PARSER.add_argument_group(pname.capitalize(), parent=plugin_args)
+
         for parg in plugin.arguments or []:
-            if not parg.is_global:
-                plugin_args.add_argument(parg.argument_name(pname), **parg.options)
-                defaults[parg.dest] = parg.default
-            else:
-                pargdest = parg.dest
-                for action in PARSER._actions:
-                    # find matching global argument
-                    if pargdest != action.dest:
-                        continue
-                    defaults[pargdest] = action.default
-
-                    # add plugin to global argument
-                    plugins = getattr(action, "plugins", [])
-                    plugins.append(pname)
-                    setattr(action, "plugins", plugins)
-
-        plugin.options = PluginOptions(defaults)
+            group.add_argument(parg.argument_name(pname), **parg.options)
 
     return True
 
 
 def setup_plugin_options(streamlink, plugin, args):
-    if plugin.arguments is None:
-        return
+    if not plugin.arguments:
+        return Options()
 
-    pname = plugin.module
-    required = OrderedDict({})
+    defaults = {}
+    values = {}
+    required = {}
+
     for parg in plugin.arguments:
+        defaults[parg.dest] = parg.default
+
         if parg.options.get("help") == argparse.SUPPRESS:
             continue
 
-        value = getattr(args, parg.dest if parg.is_global else parg.namespace_dest(pname))
-        streamlink.set_plugin_option(pname, parg.dest, value)
+        value = getattr(args, parg.namespace_dest(pluginname))
+        values[parg.dest] = value
 
-        if not parg.is_global:
-            if parg.required:
-                required[parg.name] = parg
-            # if the value is set, check to see if any of the required arguments are not set
-            if parg.required or value:
-                try:
-                    for rparg in plugin.arguments.requires(parg.name):
-                        required[rparg.name] = rparg
-                except RuntimeError:
-                    LOGGER.error("{0} plugin has a configuration error and the arguments cannot be parsed".format(pname))
-                    break
+        if parg.required:
+            required[parg.name] = parg
+        # if the value is set, check to see if any of the required arguments are not set
+        if parg.required or value:
+            try:
+                for rparg in pluginclass.arguments.requires(parg.name):
+                    required[rparg.name] = rparg
+            except RuntimeError:
+                log.error(f"{pluginname} plugin has a configuration error and the arguments cannot be parsed")
+                break
 
-    if required:
-        for req in required.values():
-            if not streamlink.get_plugin_option(pname, req.dest):
-                streamlink.set_plugin_option(pname, req.dest, "")
+    options = Options(defaults)
+    options.update(values)
+
+    return options
 
 
 def setup_config_files(streamlink, url):
