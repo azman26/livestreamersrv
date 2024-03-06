@@ -3,12 +3,12 @@
 # Linux Python2/3 Streamlink Daemon
 #
 # Copyright (c) 2017 - 2021 Billy2011 @vuplus-support.org
-# Copyright (c) 2021 jbleyel (python3 mod)
+# Copyright (c) 2021-2024 jbleyel (python3 mod)
 # License: GPLv2+
 #
 
-__version__ = "1.8.3"
-__optparserversion__ = "0.3.0"
+__version__ = "1.8.4"
+__optparserversion__ = "0.3.1"
 
 import argparse
 import atexit
@@ -54,7 +54,7 @@ from streamlink.exceptions import FatalPluginError
 from streamlink import __version__ as streamlink_version
 from streamlink.options import Options
 from streamlink.utils.args import comma_list, comma_list_filter, filesize, keyvalue, num
-from streamlink.utils.times import hours_minutes_seconds
+from streamlink.utils.times import hours_minutes_seconds_float
 from streamlink.stream import HTTPStream
 from streamlink.stream.ffmpegmux import MuxedStream
 
@@ -167,7 +167,7 @@ def log_current_arguments(streamlink, args, url, quality):
         return
 
     sensitive = set()
-    for pname, plugin in iteritems(streamlink.plugins):
+    for pname, plugin in streamlink.plugins.get_loaded().items():
         for parg in plugin.arguments or []:
             if parg.sensitive:
                 sensitive.add(parg.argument_name(pname))
@@ -217,7 +217,7 @@ class ArgumentParser(argparse.ArgumentParser):
     def add_argument_group(
         self,
         *args,
-        parent = None,
+        parent=None,
         **kwargs,
     ):
         group = super().add_argument_group(*args, **kwargs)
@@ -418,17 +418,29 @@ def build_parser():
         metavar="CODE",
     )
     transport.add_argument("--hls-timeout", help=argparse.SUPPRESS)
+
     transport.add_argument(
         "--hls-start-offset",
-        type=hours_minutes_seconds,
-        metavar="HH:MM:SS",
-        default=None,
+        type=hours_minutes_seconds_float,
+        metavar="[[XX:]XX:]XX[.XX] | [XXh][XXm][XX[.XX]s]",
+        help="""
+        Amount of time to skip from the beginning of the stream. For live
+        streams, this is a negative offset from the end of the stream (rewind).
+
+        Default is 0.
+        """,
     )
     transport.add_argument(
         "--hls-duration",
-        type=hours_minutes_seconds,
-        metavar="HH:MM:SS",
-        default=None,
+        type=hours_minutes_seconds_float,
+        metavar="[[XX:]XX:]XX[.XX] | [XXh][XXm][XX[.XX]s]",
+        help="""
+        Limit the playback duration, useful for watching segments of a stream.
+        The actual duration may be slightly longer, as it is rounded to the
+        nearest HLS segment.
+
+        Default is unlimited.
+        """,
     )
     transport.add_argument(
         "--hls-live-restart",
@@ -704,7 +716,7 @@ def setup_plugin_args(streamlink):
     """Adds plugin argument data to the argument parser."""
 
     plugin_args = PARSER.add_argument_group("Plugin options")
-    for pname, plugin in streamlink.plugins.items():
+    for pname, plugin in streamlink.plugins.get_loaded().items():
         group = PARSER.add_argument_group(pname.capitalize(), parent=plugin_args)
 
         for parg in plugin.arguments or []:
@@ -713,7 +725,7 @@ def setup_plugin_args(streamlink):
     return True
 
 
-def setup_plugin_options(streamlink, plugin, args):
+def setup_plugin_options(streamlink, plugin, args, pluginname):
     if not plugin.arguments:
         return Options()
 
@@ -735,10 +747,10 @@ def setup_plugin_options(streamlink, plugin, args):
         # if the value is set, check to see if any of the required arguments are not set
         if parg.required or value:
             try:
-                for rparg in pluginclass.arguments.requires(parg.name):
+                for rparg in plugin.arguments.requires(parg.name):
                     required[rparg.name] = rparg
             except RuntimeError:
-                log.error(f"{pluginname} plugin has a configuration error and the arguments cannot be parsed")
+                PARSER.error(f"{pluginname} plugin has a configuration error and the arguments cannot be parsed")
                 break
 
     options = Options(defaults)
@@ -812,15 +824,16 @@ def Stream(streamlink, http, url, argstr, quality):
         if LOGLEVEL in ["trace", "debug"]:
             logger.root.setLevel(LOGLEVEL)
 
+        pluginname = ""
         if not plugin:
-            plugin, resolved_url = streamlink.resolve_url(url)
+            pluginname, pluginclass, resolved_url = streamlink.resolve_url(url)
             plugin = plugin(resolved_url)
 
         if PARSER and PLUGIN_ARGS and args:
-            setup_plugin_options(streamlink, plugin, args)
+            setup_plugin_options(streamlink, plugin, args, pluginname)
             log_current_arguments(streamlink, args, url, quality)
 
-        LOGGER.info("Found matching plugin {0} for URL {1}".format(plugin.module, url))
+        LOGGER.info("Found matching plugin {0} for URL {1}".format(pluginname, url))
         if args:
             streams = plugin.streams(stream_types=args.stream_types, sorting_excludes=args.stream_sorting_excludes)
 
